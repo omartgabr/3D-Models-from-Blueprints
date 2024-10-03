@@ -17,8 +17,6 @@ a number of tasks including:
 # custom functions definitions standalone file
 import ImageProcessing_functions as IPF
 
-########################### FLOORPLAN CLASSIFICATION ###########################
-
 raw_images_folder_path = 'C:/Users/Omar G/Desktop/CCNY DSE/1.DSE I9800 Capstone Project/raw data'     # folder that contains raw images
 output_folder_path = 'C:/Users/Omar G/Desktop/CCNY DSE/1.DSE I9800 Capstone Project/Labeled_Floorplans/'     # new folder that will contain subfolders of labeled images
 
@@ -29,8 +27,25 @@ templates = {
     'Structural': 'C:/Users/Omar G/Desktop/CCNY DSE/1.DSE I9800 Capstone Project/3D-Models-from-Blueprints/Floorplan labels/Struct-label.png',
 }
 
-# execute function to process and classify images
-IPF.extract_floorplan_label(raw_images_folder_path, templates, output_folder_path)
+# clear files in folders for proper reset
+IPF.delete_files_in_folder(output_folder_path)
+
+# 1st Step: Floorplan Labeling
+# create dictionary that stores floorplan label and page number
+metadata = IPF.extract_floorplan_label(raw_images_folder_path, templates)
+
+# 2nd Step: Outside-of-Boundary Template Matching
+# detection of additional features like floor number, elevation, scales
+
+
+# 3rd Step: Edge Boundary Detection
+# store additional information like corners of rectangular contour
+metadata = IPF.outer_edge_detection(raw_images_folder_path, output_folder_path, metadata)
+
+# Final Step
+# store images to respective subfolders using metadata
+# modify function to NOT create json for uncategorized images
+IPF.create_json_files(metadata, output_folder_path)
 
 
 

@@ -6,10 +6,56 @@ import cv2
 import numpy as np
 import os
 import shutil
+import json
 
 
 #################
-# 1
+# UPDATE JSON AND SAVE IMAGE
+#################
+def create_json_files(metadata, output_folder_path):
+    """
+    Creates JSON files for each image based on the provided metadata and saves them to the corresponding output folder.
+    
+    Parameters:
+    - metadata: A dictionary containing metadata for each image, including 'scale', 'floor', 'elevation', and 'corners'.
+    - output_folder_path: The root directory where the JSON files will be saved.
+    """
+    
+    # Loop through the metadata and create JSON files for each image
+    for filename, img_metadata in metadata.items():
+        label = img_metadata.get('label')
+        page_num = img_metadata.get('page_num')
+
+        # Corresponding JSON filename (e.g., architectural_4_info.json)
+        json_filename = f"{label}_{page_num}_info.json"
+        json_file_path = os.path.join(output_folder_path, label, json_filename)
+
+        # Create the folder if it doesn't exist
+        os.makedirs(os.path.join(output_folder_path, label), exist_ok=True)
+
+        # Formatted corners (if corners are part of metadata)
+        formatted_corners = [f"({corner[0]}, {corner[1]})" for corner in img_metadata.get('corners', [])]
+
+        # Define the new image_info structure using metadata
+        image_info = {
+            filename: {
+                "file_type": label,
+                "scale": img_metadata.get('scale', 'N/A'),
+                "floor": img_metadata.get('floor', 'N/A'),
+                "elevation": img_metadata.get('elevation', 'N/A'),
+                "boundary_corners": formatted_corners,
+                "original_page_in_pdf": page_num
+            }
+        }
+
+        # Create the JSON file
+        with open(json_file_path, 'w') as f:
+            json.dump(image_info, f, indent=4)
+
+        print(f"Metadata created for {filename} in {json_file_path}.")
+
+#################
+# EXTRACT CONTOUR BY INDEX
 #################
 def extract_contour_by_index(img, index=0):
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -29,25 +75,27 @@ def extract_contour_by_index(img, index=0):
 
 
 #################
-# 2
+# DELETE FILES IN FOLDER
 #################
 # deletes all the files in the specified folder to clear
 # before adding newly labeled images
 def delete_files_in_folder(folder):
-    for filename in os.listdir(folder):
-        file_path = os.path.join(folder, filename)
-        try:
-            if os.path.isfile(file_path) or os.path.islink(file_path):
-                os.unlink(file_path)
-                print(f"{filename} has been deleted")
-            elif os.path.isdir(file_path):
-                shutil.rmtree(file_path)
-        except Exception as e:
-            print(f'Failed to delete {file_path}. Reason: {e}')
+    """
+    Deletes all files in the given folder and its subfolders without deleting the folders.
+    """
+    for root, dirs, files in os.walk(folder):
+        for file in files:
+            file_path = os.path.join(root, file)
+            try:
+                if os.path.isfile(file_path) or os.path.islink(file_path):
+                    os.unlink(file_path)
+                    print(f"{file_path} has been deleted")
+            except Exception as e:
+                print(f'Failed to delete {file_path}. Reason: {e}')
 
 
 #################
-# 3
+# PERFORM MATCHING
 #################
 # compares the input image against the various templates
 def perform_matching(image, templates):
@@ -91,40 +139,17 @@ def perform_matching(image, templates):
 
 
 #################
-# 4
+# EXTRACT FLOORPLAN LABEL
 #################
-def extract_floorplan_label(base_folder_path, templates, output_folder_path):
+def extract_floorplan_label(base_folder_path, templates):
     """
     Loads images and templates, processes and matches each image to the most fitting template,
-    then applies contour extraction twice (first for the largest contour, then for the layout),
-    and saves the layout to the appropriate folder based on the matching template label.
+    and returns the page number and label (category) for each image.
     """
-
-    # Ensure the output folder path exists, or create it if necessary
-    if not os.path.exists(output_folder_path):
-        print(f"Output folder path '{output_folder_path}' does not exist. Creating it now.")
-        os.makedirs(output_folder_path)
-
-    # Create or clean labeled folders for each label in the templates
-    for label in templates.keys():
-        label_folder = os.path.join(output_folder_path, label)
-        if os.path.exists(label_folder):
-            delete_files_in_folder(label_folder)
-        else:
-            os.makedirs(label_folder)
-
-    # Automatically find or create the 'Uncategorized' folder
-    uncategorized_folder = os.path.join(output_folder_path, 'Uncategorized')
-    if os.path.exists(uncategorized_folder):
-        delete_files_in_folder(uncategorized_folder)
-    else:
-        os.makedirs(uncategorized_folder)
-
-    # To store scores for each label
-    score_tracker = {label: [] for label in templates.keys()}
-
     # Compile list of templates that will be used for matching
     prepared_templates = []
+    metadata = {}
+    
     for label, template_path in templates.items():
         template_image = cv2.imread(template_path, 0)  # Read as grayscale
 
@@ -139,7 +164,7 @@ def extract_floorplan_label(base_folder_path, templates, output_folder_path):
 
         prepared_templates.append((label, template_image, template_image.shape[::-1]))
 
-    # Loop through each image in the folder to process, extract contours, and label
+    # Loop through each image in the folder to process, extract page_num and label
     for filename in os.listdir(base_folder_path):
         file_path = os.path.join(base_folder_path, filename)
         img = cv2.imread(file_path)
@@ -148,8 +173,8 @@ def extract_floorplan_label(base_folder_path, templates, output_folder_path):
             print(f"Failed to load image: {file_path}")
             continue
 
-        # Initialize categorized to False for each image
-        categorized = False
+        # Extract page number from the filename
+        page_num = int(filename.split('_')[1].split('.')[0])
 
         # Perform template matching using perform_matching function on the original image
         gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -159,47 +184,68 @@ def extract_floorplan_label(base_folder_path, templates, output_folder_path):
         threshold = 0.75
         if best_score >= threshold:
             print(f"Template matched as {best_label} with score {best_score}")
+            print(f"Categorizing as {best_label} for {filename}")
+            metadata[filename] = {'page_num': page_num, 'label': best_label}
+        else:
+            print(f"Categorizing as Uncategorized for {filename}")
+            metadata[filename] = {'page_num': page_num, 'label': 'Uncategorized'}
 
-            # Step 1: Extract the largest contour (likely outer boundary)
-            largest_contour = extract_contour_by_index(img, index=0)
-            if largest_contour is None:
-                print(f"Failed to find largest contour in {filename}, skipping.")
-                continue
-
-            # Step 2: Get bounding rectangle for the largest contour
-            x, y, w, h = cv2.boundingRect(largest_contour)
-            cropped_image = img[y:y + h - 10, x:x + w - 10]  # Apply the same margin as in Colab
-
-            # Step 3: Extract the second largest contour within the cropped image (likely floorplan layout)
-            second_largest_contour = extract_contour_by_index(cropped_image, index=0)
-            if second_largest_contour is None:
-                print(f"Failed to find second largest contour in {filename}, skipping.")
-                continue
-
-            # Step 4: Get bounding rectangle for the second largest contour (floorplan layout)
-            x2, y2, w2, h2 = cv2.boundingRect(second_largest_contour)
-            layout_image = cropped_image[y2:y2 + h2 - 10, x2:x2 + w2 - 10]  # Apply margin for the layout crop
-
-            # Save the layout image to the corresponding labeled folder
-            output_path = os.path.join(output_folder_path, best_label, filename)
-            print(f"Categorizing as {best_label}, saving layout image to: {output_path}")
-            cv2.imwrite(output_path, layout_image)  # Save layout image to output folder
-            categorized = True  # Mark the image as categorized
-
-        # If the image was not categorized, save it to the 'Uncategorized' folder
-        if not categorized:
-            uncategorized_path = os.path.join(uncategorized_folder, filename)
-            print(f"Categorizing as Uncategorized: {uncategorized_path}")
-            cv2.imwrite(uncategorized_path, img)
-
-    # Calculate and return the average score for each label
-    average_scores = {label: (sum(scores) / len(scores)) if scores else 0 for label, scores in score_tracker.items()}
-    return average_scores
+    return metadata
 
 
+def outer_edge_detection(base_folder_path, output_folder_path, metadata):
+    """
+    Loops through images in the base_folder_path, applies edge detection,
+    saves the processed images to output_folder_path, and returns updated metadata.
+    """
+    # Traverse through all subdirectories in the base folder path
+    for subdir, dirs, files in os.walk(base_folder_path):
+        for file in files:
+            # Process only image files (assuming they are .png)
+            if file.endswith(".png"):
+                image_path = os.path.join(subdir, file)
+                img = cv2.imread(image_path)
+                if img is None:
+                    print(f"Failed to load image: {file}, skipping.")
+                    continue
 
+                # Get corresponding metadata for the current image (already populated from extract_floorplan_label)
+                if file in metadata:
+                    img_metadata = metadata[file]
 
+                    # Perform outer edge detection for this image
+                    largest_contour = extract_contour_by_index(img, index=0)
+                    if largest_contour is None:
+                        print(f"Failed to find largest contour in {file}, skipping.")
+                        continue
 
+                    x, y, w, h = cv2.boundingRect(largest_contour)
+                    cropped_image = img[y:y + h - 10, x:x + w - 10]
+                    second_largest_contour = extract_contour_by_index(cropped_image, index=0)
+                    if second_largest_contour is None:
+                        print(f"Failed to find second largest contour in {file}, skipping.")
+                        continue
+
+                    x2, y2, w2, h2 = cv2.boundingRect(second_largest_contour)
+                    cv2.rectangle(cropped_image, (x2, y2), (x2 + w2, y2 + h2), (0, 255, 0), 2)
+                    corners = [(x2, y2), (x2 + w2, y2), (x2, y2 + h2), (x2 + w2, y2 + h2)]
+                    layout_image = cropped_image[y2:y2 + h2 - 10, x2:x2 + w2 - 10]
+
+                    # Update metadata with corner information without overwriting existing data
+                    img_metadata['corners'] = corners
+
+                    # Save the processed image in the appropriate output folder
+                    best_label = img_metadata['label']
+                    output_path = os.path.join(output_folder_path, best_label, file)
+                    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+                    cv2.imwrite(output_path, layout_image)
+                    print(f"Categorizing as {best_label}, saving layout image to: {output_path}")
+
+                else:
+                    print(f"No metadata found for {file}, skipping.")
+
+    # Return updated metadata
+    return metadata
 
 
 
