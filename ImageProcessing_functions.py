@@ -13,7 +13,7 @@ import re
 import ImageProcessing_functions as IPF
 
 ##################################
-# DELETE FILES IN FOLDER
+# CREATE PROCESSED DATA FOLDER
 ##################################
 # deletes all the files in the specified folder to clear
 # before adding newly labeled images
@@ -90,6 +90,9 @@ def extract_blueprint_type(image_path):
     y_start = img.shape[0] - crop_height
     x_start = img.shape[1] - crop_width
     sidebar_corner = img[y_start:, x_start:]
+
+    # Preprocess the image to enhance feature detection
+    sidebar_corner = preprocess_image_for_ocr(sidebar_corner, enhance=True)
     
     # Extract the contour with an appropriate index
     contour = extract_contour_by_index(sidebar_corner, index=0)
@@ -133,25 +136,28 @@ def extract_blueprint_type(image_path):
 ##################################
 # EXTRACT TEXT FEATURES
 ##################################
-def extract_text_features(image_path, blueprint_type, scale_factor=1.15):
+def extract_text_features(image_path, blueprint_type):
     """
     Extract OCR text from the image, applying different cropping conditions based on the blueprint type.
     """
     img = cv2.imread(image_path)
     height, width = img.shape[:2]
 
-    # Define cropping margins for different blueprint types
+    # Define cropping margins and scale factors for different blueprint types
     if blueprint_type == 'Architectural':
-        top_margin, bottom_margin, left_margin, right_margin = 1100, 350, 100, 2000
+        top_margin, bottom_margin, left_margin, right_margin = 1100, 400, 150, 1600
+        scale_factor = 1.  # Set specific scale factor for Architectural
     elif blueprint_type == 'Structural':
         top_margin, bottom_margin, left_margin, right_margin = 1100, 100, 500, 800
+        scale_factor = 1.2  # Set specific scale factor for Structural
     else:  # Default cropping for Mechanical and Plumbing
         top_margin, bottom_margin, left_margin, right_margin = 1100, 50, 300, 700
+        scale_factor = 1.2  # Set specific scale factor for Mechanical and Plumbing
 
     # Crop the image with the adjusted margins from all sides
     cropped_img = img[top_margin:height - bottom_margin, left_margin:width - right_margin]
     
-    # Optionally adjust the width using the scale factor
+    # Adjust the width using the specific scale factor for each blueprint type
     if scale_factor != 1:
         new_width = int(cropped_img.shape[1] * scale_factor)
         new_height = cropped_img.shape[0]  # Keep height the same
@@ -163,7 +169,7 @@ def extract_text_features(image_path, blueprint_type, scale_factor=1.15):
     
     # Extract text using OCR
     text = pytesseract.image_to_string(cropped_img)
-    '''print(f"Extracted text:\n{text}")'''
+    print(f"Extracted text:\n{text}")
     
     return text
 
@@ -177,7 +183,12 @@ def text_to_number(text):
         "FIRST": 1, "SECOND": 2, "THIRD": 3, "FOURTH": 4,
         "FIFTH": 5, "SIXTH": 6, "SEVENTH": 7, "EIGHTH": 8
     }
-    return mapping.get(text.upper())
+
+    # Check if text is None before attempting to call upper
+    if text is None:
+        return None
+    return mapping.get(text.upper(), None)
+
 
 
 ##################################
@@ -185,47 +196,70 @@ def text_to_number(text):
 ##################################
 def extract_floor_number(text):
     """
-    Extracts numeric and written floor numbers, 'ROOF PLAN', and 'CELLAR PLAN' from text.
-    Handles misreads and provides robust checking before converting text to numbers.
+    Extracts numeric floor numbers, written floors (up to EIGHTH), 'ROOF PLAN', and 'CELLAR PLAN' from text.
     """
-    # Preprocess the text for common OCR misreads
+    # Preprocess the text for common OCR errors
     text = text.replace('Sth', '5th').replace('STH', '5TH').replace('Ast', '1st').replace('Ist', '1st')
 
-    # Regex pattern to capture different floor notations
+    # Adjusted pattern to include optional characters and spaces
     pattern = r'''
         \b([1-9]|1[0-2])(?:st|nd|rd|th)?  # Numeric floors
         \s*(?:TO|--?|\s*-\s*|THRU)?\s*
-        ([1-9]|1[0-2])?(?:st|nd|rd|th)?   # Range of numeric floors
+        ([1-9]|1[0-2])?(?:st|nd|rd|th)?
         \s*[Ff][Ll][Oo][Oo][Rr]\s*[Pp][Ll][Aa][Nn]
         |
         \b(FIRST|SECOND|THIRD|FOURTH|FIFTH|SIXTH|SEVENTH|EIGHTH)
         (?:\s*(?:TO|--?|\s*-\s*|THRU)\s*(FIRST|SECOND|THIRD|FOURTH|FIFTH|SIXTH|SEVENTH|EIGHTH))?
         \s*[Ff][Ll][Oo][Oo][Rr]\s*[Pp][Ll][Aa][Nn]
         |
-        \b(ROOF|CELLAR|FOUNDATION)\s*[Pp][Ll][Aa][Nn]
+        \b(ROOF)\s*[Pp][Ll][Aa][Nn]
+        |
+        \b(CELL[AE]R)\s*[Ff]?[Ll]?[Oo]?[Oo]?[Rr]?[\s\-\.]*[Pp][Ll][Aa][Nn]
+        |
+        \b(FOUNDATION)\s*[Pp][Ll][Aa][Nn]
+        |
+        \b(SITE)\s*[Pp][Ll][Aa][Nn]
+        |
+        \b(PLOT)\s*[Pp][Ll][Aa][Nn]
     '''
 
-    matches = re.finditer(pattern, text, re.IGNORECASE | re.VERBOSE)
+    matches = re.finditer(pattern, text, re.IGNORECASE | re.VERBOSE | re.DOTALL)
     floor_set = set()
 
     for match in matches:
-        numeric_floor, range_end, written_floor, written_range_end, special_floor = match.groups()
-        if numeric_floor:
-            floor_set.add(numeric_floor)
-            if range_end:
-                floor_set.update(map(str, range(int(numeric_floor), int(range_end)+1)))
-        elif written_floor:
-            floor_number = text_to_number(written_floor)
-            if floor_number:
-                floor_set.add(str(floor_number))
-                if written_range_end:
-                    end_number = text_to_number(written_range_end)
-                    if end_number:
-                        floor_set.update(map(str, range(floor_number, end_number+1)))
-        elif special_floor:
-            floor_set.add(special_floor.lower())
+        if match.groups()[0]:
+            # Numeric floor range
+            start_floor, end_floor = match.groups()[0], match.groups()[1]
+            if end_floor is None:
+                end_floor = start_floor
+            floor_set.update(str(i) for i in range(int(start_floor), int(end_floor) + 1))
+        elif match.groups()[2]:
+            # Written floor range
+            start_floor, end_floor = text_to_number(match.groups()[2]), text_to_number(match.groups()[3])
+            if end_floor is None:
+                end_floor = start_floor
+            floor_set.update(str(i) for i in range(start_floor, end_floor + 1))
+        elif match.groups()[4]:
+            # Roof plan
+            floor_set.add('roof')
+        elif match.groups()[5]:
+            # Cellar plan
+            floor_set.add('cellar')
+        elif match.groups()[6]:
+            # Foundation plan
+            floor_set.add('foundation')
+        elif match.groups()[7]:
+            # Site plan
+            floor_set.add('site')
+        elif match.groups()[8]:
+            # Plot plan
+            floor_set.add('plot')
 
-    return ', '.join(sorted(floor_set)) if floor_set else "N/A"
+    if floor_set:
+        return ', '.join(sorted(floor_set, key=lambda x: (not x.isnumeric(), x)))
+    else:
+        print("No floors found")
+        return "N/A"
 
 
 ##################################
@@ -244,7 +278,7 @@ def extract_scales(text):
         # Clean up common OCR misreads and formatting
         corrections = {
             "V": "1", "l": "1", "I": "1", "7": "1", "f": "1", "°": "\"", "“": "\"", "”": "\"", "'": "\"", "’": "\"",
-            "–": "-", "’": "'", "=": " = "
+            "–": "-", "’": "'", "=": " = ", "T": "1"
         }
 
         # Replace misread characters
@@ -281,48 +315,65 @@ def extract_scales(text):
 def extract_floor_elevation(text):
     """
     Extracts floor elevations from the text and associates them with their respective floor numbers.
-    Corrects common OCR misreads like 'STH' -> '5TH' and handles variations in floor and elevation formats.
-    Returns a formatted string with elevations corresponding to floor numbers.
+    Handles both single and multiple floor elevations by using separate internal functions.
     """
-    # Preprocess the text to correct common OCR misreads like 'STH' -> '5TH'
-    text = text.replace('STH', '5TH').replace('sth', '5th')
 
-    # Check if "FOUNDATION PLAN" is present in the text
+    def extract_single_floor_elevation(text):
+        """Extracts a single floor elevation and returns just the elevation value."""
+        # Pattern for extracting a single floor elevation
+        single_pattern = r'[Ff][Ll][Rr]\.?\s*[Ee][Ll]\.?\s*([\d,]+(?:\.\d+)?)\s*[\'"“”°]?'
+        
+        # Find a match for the single elevation
+        match = re.search(single_pattern, text)
+        
+        if match:
+            elevation = match.group(1).replace(',', '.').strip()
+            if not elevation.endswith("'"):
+                elevation += "'"
+            return elevation
+        return None
+
+    def extract_multiple_floor_elevations(text):
+        """Extracts multiple floor elevations and returns them as a formatted string."""
+        # Pattern for extracting multiple floor elevations (with floor number and elevation)
+        multi_pattern = r'(\d+)(?:ST|ND|RD|TH)?\s*[Ff][Ll][Rr]\.?\s*[Ee][Ll]\.?\s*([\d,]+(?:\.\d+)?)\s*[\'"“”°]?'
+        
+        # Find all matches for multiple elevations
+        matches = re.findall(multi_pattern, text)
+        
+        if matches:
+            elevations = []
+            for match in matches:
+                floor_number = match[0]  # Extract the floor number (e.g., 2, 3, etc.)
+                elevation = match[1].replace(',', '.').strip()  # Normalize the decimal and remove extra commas
+                if not elevation.endswith("'"):
+                    elevation += "'"
+                # Store the floor number and its corresponding elevation
+                elevations.append(f"{floor_number}: {elevation}")
+            
+            # Return the formatted string for multiple elevations
+            if elevations:
+                return ', '.join(elevations)
+        return None
+
+    # Check if "FOUNDATION PLAN" is in the text
     if re.search(r'\bFOUNDATION\s*[Pp][Ll][Aa][Nn]', text, re.IGNORECASE):
-        return "foundation: 0'"
+        return "0'"
 
-    # Adjusted pattern to match both numeric and written floor numbers, and their elevations
-    pattern = r'(\d+)(?:ST|ND|RD|TH)?\s*[Ff][Ll][Rr]\.?\s*[Ee][Ll]\.?\s*([\d,]+(?:\.\d+)?)\s*[\'"“”°]?'
+    # First, try extracting multiple floor elevations
+    multi_floor_elevations = extract_multiple_floor_elevations(text)
+    
+    if multi_floor_elevations:
+        return multi_floor_elevations
 
-    # Try variations with optional spacing or punctuation around "FLR. EL."
-    alternative_pattern = r'(\d+)(?:ST|ND|RD|TH)?\s*[Ff][Ll][Rr]\s*\.?\s*[Ee][Ll]\s*\.?\s*([\d,]+(?:\.\d+)?)\s*[\'"“”°]?'
+    # If no multiple elevations, try extracting a single elevation
+    single_floor_elevation = extract_single_floor_elevation(text)
+    
+    if single_floor_elevation:
+        return single_floor_elevation
 
-    # First, try matching with the primary pattern
-    matches = re.findall(pattern, text)
-
-    if not matches:
-        # If no matches, try with the alternative pattern
-        matches = re.findall(alternative_pattern, text)
-
-    elevations = []
-
-    for match in matches:
-        floor_number = match[0]  # Extract floor number (e.g., 2, 3, 4, etc.)
-        elevation = match[1].replace(',', '.').strip()  # Normalize the decimal and remove extra commas
-
-        # Ensure the elevation ends with a single-quote for feet
-        if not elevation.endswith("'"):
-            elevation += "'"
-
-        # Store floor number and its corresponding elevation
-        elevations.append(f"{floor_number}: {elevation}")
-
-    # Format the list of elevations into a string
-    if elevations:
-        formatted_elevations = ', '.join(elevations)
-        return formatted_elevations
-    else:
-        return "N/A"
+    # If no elevations are found at all, return "N/A"
+    return "N/A"
 
 ##################################
 # APPLY BOUNDARY DETECTION
